@@ -192,7 +192,7 @@ FROM generate_series(1, 300) AS g;
 
 -- 1 endereço por cliente, em um bairro sorteado
 WITH b AS (SELECT array_agg(id) AS ids FROM bairros)
-INSERT INTO enderecos (cliente_id, bairro_id, logradouro, numero, complemento)
+INSERT INTO enderecos (cliente_id, bairro_id, logradouro, numero, complemento)  
 SELECT
     c.id,
     b.ids[1 + floor(random() * cardinality(b.ids))::int],
@@ -215,3 +215,115 @@ INSERT INTO entregadores (nome, telefone, veiculo) VALUES
 ('Fábio Teixeira',   '(21) 98811-1004', 'moto'),
 ('Camila Duarte',    '(21) 98811-1005', 'bicicleta'),
 ('Wesley Cardoso',   '(21) 98811-1006', 'moto');
+
+
+
+-- =====================================================
+-- Pizzaria DB: dados iniciais (parte 4: pedidos, itens, pagamentos e entregas)
+-- =====================================================
+
+SELECT setseed(0.42);
+
+-- 1) Pedidos: ~2.000 nos últimos 90 dias (mais movimento nos fins de semana e à noite)
+WITH dias AS (
+    SELECT CURRENT_DATE - g AS dia,
+           (CASE WHEN extract(dow FROM CURRENT_DATE - g) IN (0,5,6) THEN 32 ELSE 16 END
+            * (0.7 + random() * 0.6))::int AS qtd
+    FROM generate_series(1, 90) AS g
+),
+cli AS (
+    SELECT array_agg(id ORDER BY id) AS ids FROM clientes
+),
+horas AS (
+    SELECT ARRAY[11,12,12,13,13,14,15,17,18,18,19,19,19,20,20,20,20,21,21,21,22,22,23] AS h
+),
+base AS (
+    SELECT d.dia,
+           cli.ids[1 + floor(power(random(), 2) * cardinality(cli.ids))::int] AS cliente_id,
+           CASE WHEN random() < 0.8 THEN 'entrega' ELSE 'retirada' END AS tipo,
+           horas.h[1 + floor(random() * cardinality(horas.h))::int] AS hora,
+           floor(random() * 60)::int AS minuto,
+           random() AS r
+    FROM dias d
+    CROSS JOIN LATERAL generate_series(1, d.qtd) AS n
+    CROSS JOIN cli
+    CROSS JOIN horas
+)
+INSERT INTO pedidos (cliente_id, endereco_id, tipo, status, taxa_entrega, total, criado_em)
+SELECT b.cliente_id,
+       CASE WHEN b.tipo = 'entrega' THEN e.id END,
+       b.tipo,
+       CASE WHEN b.r < 0.04 THEN 'cancelado' ELSE 'entregue' END,
+       CASE WHEN b.tipo = 'entrega' THEN bb.taxa_entrega ELSE 0 END,
+       0,
+       b.dia + make_interval(hours => b.hora, mins => b.minuto)
+FROM base b
+JOIN enderecos e ON e.cliente_id = b.cliente_id
+JOIN bairros bb  ON bb.id = e.bairro_id
+ORDER BY b.dia, b.hora, b.minuto;
+
+-- 2) Itens: 1 a 3 itens por pedido (as primeiras variações do cardápio vendem mais)
+WITH var AS (
+    SELECT array_agg(id ORDER BY id) AS ids FROM variacoes_produto
+),
+sorteio AS (
+    SELECT p.id AS pedido_id,
+           var.ids[1 + floor(power(random(), 1.6) * cardinality(var.ids))::int] AS variacao_id,
+           CASE WHEN random() < 0.8 THEN 1 ELSE 2 END AS quantidade
+    FROM (
+        SELECT id,
+               CASE WHEN r < 0.45 THEN 1 WHEN r < 0.80 THEN 2 ELSE 3 END AS n
+        FROM (SELECT id, random() AS r FROM pedidos) s
+    ) p
+    CROSS JOIN LATERAL generate_series(1, p.n) AS g
+    CROSS JOIN var
+)
+INSERT INTO itens_pedido (pedido_id, variacao_id, quantidade, preco_unitario)
+SELECT s.pedido_id, s.variacao_id, SUM(s.quantidade)::int, vp.preco
+FROM sorteio s
+JOIN variacoes_produto vp ON vp.id = s.variacao_id
+GROUP BY s.pedido_id, s.variacao_id, vp.preco
+ORDER BY s.pedido_id;
+
+-- 3) Total do pedido = soma dos itens + taxa de entrega
+UPDATE pedidos p
+SET total = p.taxa_entrega + s.subtotal
+FROM (
+    SELECT pedido_id, SUM(quantidade * preco_unitario) AS subtotal
+    FROM itens_pedido
+    GROUP BY pedido_id
+) s
+WHERE s.pedido_id = p.id;
+
+-- 4) Pagamentos: um por pedido não cancelado
+INSERT INTO pagamentos (pedido_id, forma, valor, status, pago_em)
+SELECT p.id,
+       CASE WHEN p.r < 0.50 THEN 'pix'
+            WHEN p.r < 0.75 THEN 'credito'
+            WHEN p.r < 0.90 THEN 'debito'
+            ELSE 'dinheiro' END,
+       p.total,
+       'pago',
+       p.criado_em + (1 + floor(random() * 5)) * INTERVAL '1 minute'
+FROM (SELECT id, total, criado_em, random() AS r
+      FROM pedidos
+      WHERE status <> 'cancelado') p;
+
+-- 5) Entregas: pedidos de entrega concluídos (Zona Oeste e Norte demoram mais)
+INSERT INTO entregas (pedido_id, entregador_id, saiu_em, entregue_em)
+SELECT s.pedido_id,
+       s.entregador_id,
+       s.saiu_em,
+       s.saiu_em + s.duracao * INTERVAL '1 minute'
+FROM (
+    SELECT p.id AS pedido_id,
+           ent.ids[1 + floor(random() * cardinality(ent.ids))::int] AS entregador_id,
+           p.criado_em + (20 + random() * 20) * INTERVAL '1 minute' AS saiu_em,
+           10 + random() * 20
+              + CASE b.zona WHEN 'Oeste' THEN 15 WHEN 'Norte' THEN 8 ELSE 0 END AS duracao
+    FROM pedidos p
+    JOIN enderecos en ON en.id = p.endereco_id
+    JOIN bairros b    ON b.id = en.bairro_id
+    CROSS JOIN (SELECT array_agg(id) AS ids FROM entregadores) ent
+    WHERE p.tipo = 'entrega' AND p.status = 'entregue'
+) s;
