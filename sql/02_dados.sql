@@ -309,21 +309,63 @@ FROM (SELECT id, total, criado_em, random() AS r
       FROM pedidos
       WHERE status <> 'cancelado') p;
 
--- 5) Entregas: pedidos de entrega concluídos (Zona Oeste e Norte demoram mais)
-INSERT INTO entregas (pedido_id, entregador_id, saiu_em, entregue_em)
-SELECT s.pedido_id,
-       s.entregador_id,
-       s.saiu_em,
-       s.saiu_em + s.duracao * INTERVAL '1 minute'
+-- 1) Estoque inicial: o saldo atual vira o ponto de partida, 91 dias atrás
+INSERT INTO movimentacoes_estoque (insumo_id, tipo, quantidade, motivo, criado_em)
+SELECT id, 'entrada', estoque_atual, 'Estoque inicial', (CURRENT_DATE - 91) + TIME '07:00'
+FROM insumos
+WHERE estoque_atual > 0;
+
+-- 2) Saídas: consumo de insumos de cada pedido (ficha técnica x quantidade vendida)
+INSERT INTO movimentacoes_estoque (insumo_id, pedido_id, tipo, quantidade, motivo, criado_em)
+SELECT ft.insumo_id, p.id, 'saida', SUM(ft.quantidade * i.quantidade), 'Venda', p.criado_em
+FROM pedidos p
+JOIN itens_pedido i   ON i.pedido_id = p.id
+JOIN ficha_tecnica ft ON ft.variacao_id = i.variacao_id
+WHERE p.status <> 'cancelado'
+GROUP BY ft.insumo_id, p.id, p.criado_em;
+
+-- 3) Entradas: compra semanal, cobrindo o consumo da semana + 10% de folga
+WITH consumo AS (
+    SELECT insumo_id,
+           DATE_TRUNC('week', criado_em) AS semana,
+           SUM(quantidade)               AS total
+    FROM movimentacoes_estoque
+    WHERE tipo = 'saida'
+    GROUP BY insumo_id, DATE_TRUNC('week', criado_em)
+)
+INSERT INTO movimentacoes_estoque (insumo_id, tipo, quantidade, motivo, criado_em)
+SELECT insumo_id,
+       'entrada',
+       CEIL(total * 1.10),
+       'Compra semanal',
+       GREATEST(semana + INTERVAL '8 hours', (CURRENT_DATE - 90) + TIME '08:00')
+FROM consumo;
+
+-- 4) Perdas: cerca de 2% do consumo semanal
+WITH consumo AS (
+    SELECT insumo_id,
+           DATE_TRUNC('week', criado_em) AS semana,
+           SUM(quantidade)               AS total
+    FROM movimentacoes_estoque
+    WHERE tipo = 'saida'
+    GROUP BY insumo_id, DATE_TRUNC('week', criado_em)
+)
+INSERT INTO movimentacoes_estoque (insumo_id, tipo, quantidade, motivo, criado_em)
+SELECT insumo_id,
+       'perda',
+       ROUND(total * 0.02, 3),
+       'Desperdício / validade',
+       LEAST(semana + INTERVAL '6 days 22 hours', NOW())
+FROM consumo
+WHERE ROUND(total * 0.02, 3) > 0;
+
+-- 5) Saldo atual de cada insumo = soma do livro-razão
+UPDATE insumos i
+SET estoque_atual = s.saldo
 FROM (
-    SELECT p.id AS pedido_id,
-           ent.ids[1 + floor(random() * cardinality(ent.ids))::int] AS entregador_id,
-           p.criado_em + (20 + random() * 20) * INTERVAL '1 minute' AS saiu_em,
-           10 + random() * 20
-              + CASE b.zona WHEN 'Oeste' THEN 15 WHEN 'Norte' THEN 8 ELSE 0 END AS duracao
-    FROM pedidos p
-    JOIN enderecos en ON en.id = p.endereco_id
-    JOIN bairros b    ON b.id = en.bairro_id
-    CROSS JOIN (SELECT array_agg(id) AS ids FROM entregadores) ent
-    WHERE p.tipo = 'entrega' AND p.status = 'entregue'
-) s;
+    SELECT insumo_id,
+           SUM(CASE tipo WHEN 'entrada' THEN quantidade ELSE -quantidade END) AS saldo
+    FROM movimentacoes_estoque
+    GROUP BY insumo_id
+) s
+WHERE s.insumo_id = i.id;
