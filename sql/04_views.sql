@@ -99,3 +99,7 @@ JOIN pedidos p    ON p.id = e.pedido_id
 JOIN enderecos en ON en.id = p.endereco_id
 JOIN bairros b    ON b.id = en.bairro_id
 GROUP BY b.zona;
+
+
+       ROUND(EXTRACT(EPOCH FROM (e.entregue_em - p.criado_em)) / 60) AS minutos_ate_entrega,
+       EXTRACT(DOW FROM p.criado_em)::int                            AS dia_semana_num
