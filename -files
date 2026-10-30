@@ -1,0 +1,13 @@
+[33m3e3b120[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Adiciona README do projeto
+[33mdebc541[m Adiciona diagrama ER
+[33m610d7bd[m Adiciona dia_semana_num à view de pedidos
+[33mad2b40a[m Adiciona notebook de análise de vendas
+[33mb7a1294[m Adiciona views para análise e dashboard
+[33m988cfd5[m Adiciona teste dos triggers de estoque
+[33m8a0c99a[m Adiciona movimentação de estoque
+[33m379b556[m Adiciona consultas de negócio
+[33m52ece62[m Adiciona pedidos, itens, pagamentos e entregas
+[33m8739039[m Adiciona tabelas de pedidos e entregas, clientes e entregadores
+[33mdbbe7d6[m Adiciona dados iniciais do cardápio
+[33mbabab21[m Adiciona schema completo do banco
+[33m39e9e55[m Estrutura inicial do projeto
